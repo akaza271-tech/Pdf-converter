@@ -3,35 +3,54 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Photo to PDF (HEIC Supported)</title>
+    <title>Multi-Page Note Scanner</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.js"></script>
+    
     <style>
         body { font-family: 'Segoe UI', sans-serif; display: flex; flex-direction: column; align-items: center; background-color: #f0f2f5; padding: 20px; }
-        .container { background: white; padding: 30px; border-radius: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); text-align: center; max-width: 500px; width: 100%; }
+        .container { background: white; padding: 30px; border-radius: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); text-align: center; max-width: 600px; width: 100%; }
         .btn { padding: 12px 24px; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; margin: 10px; transition: 0.2s; }
         .btn-add { background-color: #6c5ce7; color: white; }
         .btn-download { background-color: #00b894; color: white; display: none; }
+        
+        /* Cropper Modal */
+        #cropper-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 1000; flex-direction: column; align-items: center; justify-content: center; }
+        .cropper-wrapper { width: 90%; max-height: 80vh; }
+        #image-to-crop { max-width: 100%; display: block; }
+
         #preview-container { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 20px; }
-        .preview-img { width: 100%; height: 100px; object-fit: cover; border-radius: 8px; border: 2px solid #eee; }
+        .preview-img { width: 100%; height: 120px; object-fit: contain; border-radius: 8px; border: 2px solid #ddd; background: #fff; }
         input[type="file"] { display: none; }
-        .status { margin-top: 10px; font-size: 14px; color: #636e72; }
-        #loading-overlay { display: none; color: #6c5ce7; font-weight: bold; margin-bottom: 10px; }
+        .status { margin-top: 10px; font-size: 14px; color: #636e72; font-weight: bold; }
+        #loading-text { color: #e17055; display: none; margin-bottom: 10px; }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h2>📸 Image to PDF</h2>
-    <div id="loading-overlay">Converting images... please wait...</div>
-    <p class="status" id="counter">0 / 10 photos added</p>
+    <h2>📓 Multi-Page Note Scanner</h2>
+    <div id="loading-text">Preparing your photos...</div>
+    <p class="status" id="counter">0 / 10 pages added</p>
     
-    <label for="imageInput" class="btn btn-add">Select Photos</label>
+    <label for="imageInput" class="btn btn-add">Select Multiple Photos</label>
     <input type="file" id="imageInput" accept="image/*, .heic" multiple>
     
-    <button id="downloadBtn" class="btn btn-download">Download PDF</button>
-
+    <button id="downloadBtn" class="btn btn-download">Generate PDF</button>
     <div id="preview-container"></div>
+</div>
+
+<div id="cropper-modal">
+    <h3 style="color:white; margin-bottom:10px;" id="crop-title">Crop Page 1</h3>
+    <div class="cropper-wrapper">
+        <img id="image-to-crop">
+    </div>
+    <div style="margin-top:20px;">
+        <button class="btn btn-add" id="cropDoneBtn">Save & Next</button>
+        <button class="btn" style="background:#ff7675; color:white;" onclick="skipImage()">Skip this photo</button>
+    </div>
 </div>
 
 <script>
@@ -39,63 +58,115 @@
     const imageInput = document.getElementById('imageInput');
     const previewContainer = document.getElementById('preview-container');
     const downloadBtn = document.getElementById('downloadBtn');
-    const loading = document.getElementById('loading-overlay');
-    const counter = document.getElementById('counter');
+    const modal = document.getElementById('cropper-modal');
+    const imageToCrop = document.getElementById('image-to-crop');
+    const cropDoneBtn = document.getElementById('cropDoneBtn');
+    const loadingText = document.getElementById('loading-text');
     
-    let imagesArray = [];
+    let processedImages = [];
+    let pendingFiles = []; // Queue for multiple photos
+    let cropper = null;
 
     imageInput.addEventListener('change', async (e) => {
         const files = Array.from(e.target.files);
+        if (!files.length) return;
+
+        loadingText.style.display = 'block';
+        pendingFiles = [...pendingFiles, ...files];
         
-        if (imagesArray.length + files.length > 10) {
-            alert("Limit reached! Max 10 photos.");
+        // Start processing the first image in the queue
+        processNextInQueue();
+    });
+
+    async function processNextInQueue() {
+        if (pendingFiles.length === 0) {
+            loadingText.style.display = 'none';
+            imageInput.value = '';
             return;
         }
 
-        loading.style.display = 'block';
-
-        for (let file of files) {
-            let blob = file;
-
-            // Check if it's a HEIC file
-            if (file.name.toLowerCase().endsWith('.heic')) {
-                try {
-                    const converted = await heic2any({ blob: file, toType: "image/jpeg", quality: 0.7 });
-                    blob = Array.isArray(converted) ? converted[0] : converted;
-                } catch (err) {
-                    console.error("HEIC conversion failed", err);
-                }
-            }
-
-            const reader = new FileReader();
-            reader.onload = (event) => {
-                const imgData = event.target.result;
-                imagesArray.push(imgData);
-                
-                const img = document.createElement('img');
-                img.src = imgData;
-                img.classList.add('preview-img');
-                previewContainer.appendChild(img);
-
-                updateUI();
-            };
-            reader.readAsDataURL(blob);
+        if (processedImages.length >= 10) {
+            alert("Max 10 pages reached!");
+            pendingFiles = [];
+            loadingText.style.display = 'none';
+            return;
         }
-        loading.style.display = 'none';
-    });
+
+        const file = pendingFiles.shift();
+        let blob = file;
+
+        // HEIC Support
+        if (file.name.toLowerCase().endsWith('.heic')) {
+            try {
+                const converted = await heic2any({ blob: file, toType: "image/jpeg", quality: 0.6 });
+                blob = Array.isArray(converted) ? converted[0] : converted;
+            } catch (err) { console.error("HEIC Error", err); }
+        }
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            imageToCrop.src = event.target.result;
+            modal.style.display = 'flex';
+            document.getElementById('crop-title').innerText = `Adjusting Page ${processedImages.length + 1}`;
+            
+            if (cropper) cropper.destroy();
+            cropper = new Cropper(imageToCrop, {
+                viewMode: 1,
+                dragMode: 'move',
+                autoCropArea: 0.9,
+                restore: false,
+                guides: true,
+                center: true,
+                highlight: false,
+                cropBoxMovable: true,
+                cropBoxResizable: true,
+                toggleDragModeOnDblclick: false,
+            });
+        };
+        reader.readAsDataURL(blob);
+    }
+
+    cropDoneBtn.onclick = () => {
+        const canvas = cropper.getCroppedCanvas({ maxWidth: 1600, imageSmoothingQuality: 'high' });
+        const croppedData = canvas.toDataURL('image/jpeg', 0.85);
+        
+        processedImages.push(croppedData);
+        
+        // Add to UI Preview
+        const img = document.createElement('img');
+        img.src = croppedData;
+        img.classList.add('preview-img');
+        previewContainer.appendChild(img);
+
+        modal.style.display = 'none';
+        updateUI();
+        
+        // Automatically move to next image in queue
+        processNextInQueue();
+    };
+
+    function skipImage() {
+        modal.style.display = 'none';
+        processNextInQueue();
+    }
 
     function updateUI() {
-        counter.innerText = `${imagesArray.length} / 10 photos added`;
-        downloadBtn.style.display = imagesArray.length > 0 ? 'inline-block' : 'none';
+        document.getElementById('counter').innerText = `${processedImages.length} / 10 pages added`;
+        downloadBtn.style.display = processedImages.length > 0 ? 'inline-block' : 'none';
     }
 
     downloadBtn.onclick = () => {
-        const pdf = new jsPDF();
-        imagesArray.forEach((img, i) => {
+        const pdf = new jsPDF('p', 'mm', 'a4');
+        const pageWidth = pdf.internal.pageSize.getWidth();
+        const pageHeight = pdf.internal.pageSize.getHeight();
+
+        processedImages.forEach((img, i) => {
             if (i > 0) pdf.addPage();
-            pdf.addImage(img, 'JPEG', 10, 10, 190, 0);
+            // Centers the cropped image perfectly on A4
+            pdf.addImage(img, 'JPEG', 0, 0, pageWidth, pageHeight, undefined, 'FAST');
         });
-        pdf.save("my-photos.pdf");
+
+        pdf.save("My_Scanned_Notes.pdf");
     };
 </script>
 
